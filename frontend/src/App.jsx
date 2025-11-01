@@ -73,19 +73,33 @@ function App() {
   }), []);
 
   useEffect(() => {
+    console.log('🔍 Initializing app. API Base URL:', API_BASE_URL);
     setLoading(true);
-    fetch(`${API_BASE_URL}/api/districts`)
+    const districtsUrl = `${API_BASE_URL}/api/districts`;
+    console.log('📡 Fetching districts from:', districtsUrl);
+    
+    fetch(districtsUrl)
       .then((res) => {
-        if (!res.ok) throw new Error('Failed to fetch districts');
+        console.log('📥 Districts response status:', res.status, res.statusText);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch districts: ${res.status} ${res.statusText}`);
+        }
         return res.json();
       })
       .then((data) => {
-        setDistricts(data);
-        if (data.length > 0) setSelected(data[0].name);
+        console.log('✅ Districts data received:', data);
+        setDistricts(Array.isArray(data) ? data : []);
+        if (Array.isArray(data) && data.length > 0) {
+          setSelected(data[0].name);
+          console.log('✓ Selected first district:', data[0].name);
+        } else {
+          console.warn('⚠️ No districts in response');
+        }
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message);
+        console.error('❌ Error fetching districts:', err);
+        setError(`Failed to load districts: ${err.message}. Make sure backend is running on ${API_BASE_URL}`);
         setLoading(false);
       });
   }, []);
@@ -121,7 +135,25 @@ function App() {
       if (!res.ok) throw new Error('Failed to fetch performance');
       const text = await res.text();
       let json = null;
-      try { json = JSON.parse(text); } catch (_) {}
+      try { 
+        json = JSON.parse(text); 
+        // Debug: log the structure to see what we're getting
+        console.log('📊 Performance data received:', json);
+        if (json.records && json.records.length > 0) {
+          const firstRecord = json.records[0];
+          console.log('📋 First record structure:', firstRecord);
+          console.log('🔑 First record keys:', Object.keys(firstRecord));
+          console.log('💰 Wage data check:');
+          console.log('  avg_wage_rate:', firstRecord.avg_wage_rate, typeof firstRecord.avg_wage_rate);
+          console.log('  total_wages:', firstRecord.total_wages, typeof firstRecord.total_wages);
+          console.log('  households_worked:', firstRecord.households_worked, typeof firstRecord.households_worked);
+          console.log('  persondays_generated:', firstRecord.persondays_generated, typeof firstRecord.persondays_generated);
+        } else {
+          console.warn('⚠️ No records in response:', json);
+        }
+      } catch (e) {
+        console.error('❌ Failed to parse JSON:', e, 'Raw text:', text.substring(0, 200));
+      }
       setPerformance(json || { raw: text });
     } catch (e) {
       setPerfError(e.message);
@@ -175,7 +207,6 @@ function App() {
     district_name: '🏢',
     households_worked: '👨‍👩‍👧‍👦',
     persondays_generated: '⏱️',
-    women_persondays_percent: '👩',
     no_of_ongoing_works: '🏗️',
     no_of_completed_works: '✅',
     avg_wage_rate: '₹',
@@ -191,7 +222,6 @@ function App() {
       district_name: 'ज़िला',
       households_worked: 'काम करने वाले परिवार',
       persondays_generated: 'सृजित मानव-दिवस',
-      women_persondays_percent: 'महिला मानव-दिवस (%)',
       no_of_ongoing_works: 'चल रहे कार्य',
       no_of_completed_works: 'पूरा हुए कार्य',
       avg_wage_rate: 'औसत मज़दूरी दर',
@@ -240,7 +270,6 @@ function App() {
       en: {
         households_worked: 'Families who received work',
         persondays_generated: 'Total days of employment created',
-        women_persondays_percent: 'Percentage of workdays by women',
         no_of_ongoing_works: 'Projects currently running',
         no_of_completed_works: 'Projects finished this period',
         avg_wage_rate: 'Average payment per day per person',
@@ -249,7 +278,6 @@ function App() {
       hi: {
         households_worked: 'काम पाने वाले परिवार',
         persondays_generated: 'बनाए गए रोज़गार के दिन',
-        women_persondays_percent: 'महिलाओं द्वारा काम के दिनों का प्रतिशत',
         no_of_ongoing_works: 'अभी चल रहे प्रोजेक्ट',
         no_of_completed_works: 'इस अवधि में पूरे हुए प्रोजेक्ट',
         avg_wage_rate: 'प्रति व्यक्ति प्रति दिन औसत भुगतान',
@@ -260,25 +288,59 @@ function App() {
   };
 
   const renderCards = () => {
-    if (!performance || !performance.records || performance.records.length === 0) return null;
+    if (!performance) {
+      console.log('No performance data available');
+      return null;
+    }
+    if (!performance.records || performance.records.length === 0) {
+      console.log('Performance data exists but no records:', performance);
+      return (
+        <div className="card" style={{ borderColor: 'var(--warning)', marginTop: 16 }}>
+          <div style={{ color: 'var(--warning)' }}>
+            ⚠️ {lang === 'hi' ? 'कोई डेटा नहीं मिला' : 'No data found'}
+          </div>
+          <div className="subtle" style={{ marginTop: 8 }}>
+            {lang === 'hi' 
+              ? 'इस जिले के लिए कोई रिकॉर्ड उपलब्ध नहीं है।'
+              : 'No records available for this district.'}
+          </div>
+          {performance.source && (
+            <div className="subtle" style={{ marginTop: 4, fontSize: '0.85em' }}>
+              Source: {performance.source}
+            </div>
+          )}
+        </div>
+      );
+    }
     const rec = performance.records[0];
+    console.log('Rendering cards with record:', rec);
     const cards = [];
 
     const candidateKeys = [
       'fin_year','month','state_name','district_name',
-      'households_worked','persondays_generated','women_persondays_percent',
+      'households_worked','persondays_generated',
       'no_of_ongoing_works','no_of_completed_works','avg_wage_rate','total_wages'
     ];
 
     candidateKeys.forEach(k => {
-      if (rec[k] !== undefined) {
-        cards.push({ k: labelFor(k), v: rec[k], icon: icons[k] || '' });
+      // Try both snake_case and camelCase
+      const value = rec[k] ?? rec[k.split('_').map((w, i) => i === 0 ? w : w[0].toUpperCase() + w.slice(1)).join('')];
+      if (value !== undefined && value !== null) {
+        cards.push({ k: labelFor(k), v: value, icon: icons[k] || '' });
       }
     });
 
+    // If no cards found, try to use any available keys
     if (cards.length === 0) {
-      Object.keys(rec).slice(0, 6).forEach(k => cards.push({ k: labelFor(k), v: String(rec[k]), icon: '' }));
+      console.warn('No standard keys found, using all available keys:', Object.keys(rec));
+      Object.keys(rec).slice(0, 6).forEach(k => {
+        if (rec[k] !== undefined && rec[k] !== null) {
+          cards.push({ k: k, v: String(rec[k]), icon: '' });
+        }
+      });
     }
+    
+    console.log('Cards to render:', cards);
 
     return (
       <div className="grid">
@@ -290,8 +352,6 @@ function App() {
           let formattedValue = c.v;
           if (fieldKey === 'avg_wage_rate' || fieldKey === 'total_wages') {
             formattedValue = formatCurrency(c.v);
-          } else if (fieldKey === 'women_persondays_percent') {
-            formattedValue = formatPercent(c.v);
           } else if (['households_worked', 'persondays_generated', 'no_of_ongoing_works', 'no_of_completed_works'].includes(fieldKey)) {
             formattedValue = formatNumber(c.v);
           } else {
@@ -375,9 +435,49 @@ function App() {
   const renderTable = () => {
     if (!performance || !performance.records || performance.records.length === 0) return null;
     const rows = performance.records;
-    const val = (o, k) => o[k] ?? '-';
+    
+    // Helper to get value from object - supports both snake_case (API) and camelCase (Java entity)
+    const val = (o, k) => {
+      if (!o || typeof o !== 'object') {
+        console.warn('val() called with invalid object:', o);
+        return '-';
+      }
+      
+      // Try snake_case first (API format)
+      if (o[k] !== undefined && o[k] !== null && o[k] !== '') {
+        return o[k];
+      }
+      
+      // Try camelCase (Java entity format) - convert snake_case to camelCase
+      const camelKey = k.split('_').map((word, i) => 
+        i === 0 ? word : word.charAt(0).toUpperCase() + word.slice(1)
+      ).join('');
+      if (o[camelKey] !== undefined && o[camelKey] !== null && o[camelKey] !== '') {
+        return o[camelKey];
+      }
+      
+      // Try alternative field names
+      const alternatives = {
+        'avg_wage_rate': ['Average_Wage_rate_per_day_per_person', 'average_wage_rate'],
+        'total_wages': ['Material_and_skilled_Wages', 'Wages', 'Total_Wages'],
+        'households_worked': ['Total_Households_Worked', 'Households_Worked', 'No_of_Households_Worked', 'Number_of_Households_Worked'],
+        'persondays_generated': ['Total_Persondays_Generated', 'Persondays_Generated', 'Persondays_of_Central_Liability_so_far'],
+        'no_of_ongoing_works': ['Number_of_Ongoing_Works', 'No_of_Ongoing_Works', 'Ongoing_Works', 'OngoingWorks'],
+        'no_of_completed_works': ['Number_of_Completed_Works', 'No_of_Completed_Works', 'Completed_Works', 'CompletedWorks']
+      };
+      
+      if (alternatives[k]) {
+        for (const altKey of alternatives[k]) {
+          if (o[altKey] !== undefined && o[altKey] !== null && o[altKey] !== '') {
+            return o[altKey];
+          }
+        }
+      }
+      
+      return '-';
+    };
     const badge = (num, fieldKey = '') => {
-      if (num === '-' || num === undefined) return <span className="badge">-</span>;
+      if (num === '-' || num === undefined || num === null) return <span className="badge">-</span>;
       const n = Number(num.toString().replace(/,/g,''));
       const cls = isNaN(n) ? 'badge' : n > 0 ? 'badge ok' : 'badge warn';
       
@@ -385,8 +485,6 @@ function App() {
       let formatted = num;
       if (fieldKey === 'avg_wage_rate' || fieldKey === 'total_wages') {
         formatted = formatCurrency(num);
-      } else if (fieldKey === 'women_persondays_percent') {
-        formatted = formatPercent(num);
       } else if (typeof n === 'number') {
         formatted = n.toLocaleString('en-IN');
       }
@@ -404,7 +502,6 @@ function App() {
               <th>{labelFor('fin_year')}</th>
               <th>{labelFor('households_worked')}</th>
               <th>{labelFor('persondays_generated')}</th>
-              <th>{labelFor('women_persondays_percent')}</th>
               <th>{labelFor('no_of_ongoing_works')}</th>
               <th>{labelFor('no_of_completed_works')}</th>
               <th>{labelFor('avg_wage_rate')}</th>
@@ -418,7 +515,6 @@ function App() {
                 <td>{val(r,'fin_year')}</td>
                 <td>{badge(val(r,'households_worked'), 'households_worked')}</td>
                 <td>{badge(val(r,'persondays_generated'), 'persondays_generated')}</td>
-                <td>{badge(val(r,'women_persondays_percent'), 'women_persondays_percent')}</td>
                 <td>{badge(val(r,'no_of_ongoing_works'), 'no_of_ongoing_works')}</td>
                 <td>{badge(val(r,'no_of_completed_works'), 'no_of_completed_works')}</td>
                 <td>{badge(val(r,'avg_wage_rate'), 'avg_wage_rate')}</td>
@@ -642,13 +738,11 @@ function App() {
 
     const textEn = `District ${r.district_name || selected} in ${r.state_name || 'Maharashtra'}. Month ${r.month || ''} of ${r.fin_year || ''}. ` +
       `${r.households_worked ? r.households_worked + ' households worked. ' : ''}` +
-      `${r.persondays_generated ? r.persondays_generated + ' person days generated. ' : ''}` +
-      `${r.women_persondays_percent ? r.women_persondays_percent + ' percent women person days.' : ''}`;
+      `${r.persondays_generated ? r.persondays_generated + ' person days generated. ' : ''}`;
 
     const textHi = `${r.state_name || 'महाराष्ट्र'} के ${r.district_name || selected} ज़िले में, ${r.fin_year || ''} के ${r.month || ''} महीने का प्रदर्शन। ` +
       `${r.households_worked ? r.households_worked + ' परिवारों ने काम किया। ' : ''}` +
-      `${r.persondays_generated ? r.persondays_generated + ' मानव-दिवस बने। ' : ''}` +
-      `${r.women_persondays_percent ? 'महिलाओं का प्रतिशत ' + r.women_persondays_percent + '।' : ''}`;
+      `${r.persondays_generated ? r.persondays_generated + ' मानव-दिवस बने। ' : ''}`;
 
     const utter = new SpeechSynthesisUtterance(lang === 'hi' ? textHi : textEn);
     utter.lang = lang === 'hi' ? 'hi-IN' : 'en-IN';
@@ -668,8 +762,20 @@ function App() {
         </div>
       </div>
 
-      {loading && <p>Loading districts...</p>}
-      {error && <p style={{color:'var(--danger)'}}>Error: {error}</p>}
+      {loading && <div className="card"><p>⏳ Loading districts...</p></div>}
+      {error && (
+        <div className="card" style={{ borderColor: 'var(--danger)' }}>
+          <div style={{ color: 'var(--danger)' }}>
+            <strong>⚠️ Error:</strong> {error}
+          </div>
+          <div className="subtle" style={{ marginTop: 8 }}>
+            Make sure the backend is running on <code>{API_BASE_URL}</code>
+          </div>
+          <div className="subtle" style={{ marginTop: 4, fontSize: '0.85em' }}>
+            API Base URL: <code>{API_BASE_URL}</code>
+          </div>
+        </div>
+      )}
       {!loading && !error && (
         <>
           <div className="row">
@@ -698,7 +804,18 @@ function App() {
             </button>
           </div>
 
-          {perfError && <p style={{ color: 'var(--danger)', marginTop: 12 }}>Error: {perfError}</p>}
+          {perfError && (
+            <div className="card" style={{ borderColor: 'var(--danger)', marginTop: 16 }}>
+              <div style={{ color: 'var(--danger)' }}>
+                <strong>⚠️ Error:</strong> {perfError}
+              </div>
+              <div className="subtle" style={{ marginTop: 8 }}>
+                {lang === 'hi' 
+                  ? 'प्रदर्शन डेटा लोड नहीं हो सका। कृपया बाद में पुनः प्रयास करें।'
+                  : 'Could not load performance data. Please try again later.'}
+              </div>
+            </div>
+          )}
           {renderCards()}
           {renderTrends()}
           {renderRecent()}
@@ -789,12 +906,6 @@ function App() {
                               <div>
                                 <span className="subtle">{lang === 'hi' ? 'रोज़गार दिवस' : 'Employment Days'}: </span>
                                 <strong>{formatNumber(record.persondays_generated)}</strong>
-                              </div>
-                            )}
-                            {record.women_persondays_percent && (
-                              <div>
-                                <span className="subtle">{lang === 'hi' ? 'महिला %' : 'Women %'}: </span>
-                                <strong>{formatPercent(record.women_persondays_percent)}</strong>
                               </div>
                             )}
                             {record.avg_wage_rate && (

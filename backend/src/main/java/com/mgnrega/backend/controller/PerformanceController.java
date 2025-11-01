@@ -52,24 +52,108 @@ public class PerformanceController {
                                                    @RequestParam(required = false, defaultValue = "12") String limit) {
         try {
             String cacheKey = (state == null ? "" : state) + "|" + (district == null ? "" : district) + "|" + (month == null ? "" : month) + "|" + (year == null ? "" : year) + "|" + limit;
+            
+            // Try database first if enabled
+            if (useDatabase && state != null && district != null) {
+                List<PerformanceRecord> dbRecords = dataService.getFromDatabase(state, district, Integer.parseInt(limit));
+                // Check if database records have actual data (not all nulls)
+                boolean hasRealData = dbRecords.stream().anyMatch(r -> 
+                    r.getPersondaysGenerated() != null || 
+                    r.getHouseholdsWorked() != null || 
+                    r.getAvgWageRate() != null || 
+                    r.getTotalWages() != null
+                );
+                
+                // Check if women_persondays_percent is missing (even if other data exists)
+                boolean missingWomenPercent = dbRecords.stream().anyMatch(r -> 
+                    r.getWomenPersondaysPercent() == null && 
+                    (r.getPersondaysGenerated() != null || r.getHouseholdsWorked() != null)
+                );
+                
+                if (!dbRecords.isEmpty() && hasRealData && !missingWomenPercent) {
+                    logger.info("Returning {} records from database (with data)", dbRecords.size());
+                    
+                    // Convert PerformanceRecord objects to snake_case format (matching API response format)
+                    List<Map<String, Object>> recordsList = new java.util.ArrayList<>();
+                    for (PerformanceRecord pr : dbRecords) {
+                        Map<String, Object> record = new HashMap<>();
+                        record.put("fin_year", pr.getFinYear());
+                        record.put("month", pr.getMonth());
+                        record.put("state_name", pr.getStateName());
+                        record.put("district_name", pr.getDistrictName());
+                        record.put("households_worked", pr.getHouseholdsWorked());
+                        
+                        // Calculate persondays_generated if null - we can't recalculate from raw API data
+                        // but we'll use what's stored or try to infer
+                        Long persondays = pr.getPersondaysGenerated();
+                        record.put("persondays_generated", persondays);
+                        record.put("Total_Persondays_Generated", persondays);
+                        record.put("Persondays_of_Central_Liability_so_far", persondays);
+                        
+                        // Calculate women_persondays_percent if null
+                        // Note: We don't have Women_Persondays stored separately, so we can't recalculate
+                        // This is why we need fresh data from API
+                        Double womenPercent = pr.getWomenPersondaysPercent();
+                        
+                        // If women percent is null but we have persondays, we can't calculate without Women_Persondays
+                        // However, we can check if the data should be refreshed from API
+                        if (womenPercent == null && persondays == null) {
+                            logger.warn("Record {} - {} has null persondays and women percent. Should fetch fresh from API.", 
+                                pr.getDistrictName(), pr.getStateName());
+                        }
+                        
+                        record.put("women_persondays_percent", womenPercent);
+                        record.put("Women_Persondays_Percent", womenPercent);
+                        
+                        record.put("no_of_ongoing_works", pr.getNoOfOngoingWorks());
+                        record.put("no_of_completed_works", pr.getNoOfCompletedWorks());
+                        // Wage fields - ensure they're included even if null
+                        record.put("avg_wage_rate", pr.getAvgWageRate());
+                        record.put("total_wages", pr.getTotalWages());
+                        // Also include alternative field names for compatibility
+                        record.put("Average_Wage_rate_per_day_per_person", pr.getAvgWageRate());
+                        record.put("Material_and_skilled_Wages", pr.getTotalWages());
+                        record.put("Total_Households_Worked", pr.getHouseholdsWorked());
+                        record.put("Number_of_Ongoing_Works", pr.getNoOfOngoingWorks());
+                        record.put("Number_of_Completed_Works", pr.getNoOfCompletedWorks());
+                        
+                        // Calculate Women_Persondays if we have both persondays and percent
+                        if (persondays != null && womenPercent != null) {
+                            long womenPersondays = (long)(persondays * womenPercent / 100.0);
+                            record.put("Women_Persondays", womenPersondays);
+                        } else {
+                            record.put("Women_Persondays", null);
+                        }
+                        
+                        recordsList.add(record);
+                    }
+                    
+                    logger.info("✅ Converted {} database records to API format", recordsList.size());
+                    
+                    Map<String, Object> response = new HashMap<>();
+                    response.put("records", recordsList);
+                    response.put("source", "database");
+                    response.put("total", recordsList.size());
+                    response.put("count", recordsList.size());
+                    String jsonResponse = objectMapper.writeValueAsString(response);
+                    cache.put(cacheKey, jsonResponse);
+                    return ResponseEntity.ok(jsonResponse);
+                } else if (!dbRecords.isEmpty() && (!hasRealData || missingWomenPercent)) {
+                    // Database has records but they're all null OR missing women_persondays_percent - fetch fresh from API
+                    if (!hasRealData) {
+                        logger.warn("Database records exist but contain no data (all null). Fetching fresh from API...");
+                    } else if (missingWomenPercent) {
+                        logger.warn("Database records exist but missing women_persondays_percent. Fetching fresh from API to recalculate...");
+                    }
+                    // Continue to API fetch below to get fresh data with calculated values
+                }
+            }
+            
+            // Check cache AFTER database check (if database had no real data)
             String cached = cache.get(cacheKey);
             if (cached != null) {
                 logger.info("Returning cached data for key: {}", cacheKey);
                 return ResponseEntity.ok(cached);
-            }
-
-            // Try database first if enabled
-            if (useDatabase && state != null && district != null) {
-                List<PerformanceRecord> dbRecords = dataService.getFromDatabase(state, district, Integer.parseInt(limit));
-                if (!dbRecords.isEmpty()) {
-                    logger.info("Returning {} records from database", dbRecords.size());
-                    Map<String, Object> response = new HashMap<>();
-                    response.put("records", dbRecords);
-                    response.put("source", "database");
-                    String jsonResponse = objectMapper.writeValueAsString(response);
-                    cache.put(cacheKey, jsonResponse);
-                    return ResponseEntity.ok(jsonResponse);
-                }
             }
 
             // Rate limiting check
@@ -285,6 +369,56 @@ public class PerformanceController {
                 } else {
                     logger.info("Attempting to save performance data to database for state={}, district={}", state, district);
                     dataService.savePerformanceData(result);
+                    
+                    // After saving, retrieve the processed data from database to return calculated fields
+                    if (state != null && district != null) {
+                        List<PerformanceRecord> savedRecords = dataService.getFromDatabase(state, district, Integer.parseInt(limit));
+                        if (!savedRecords.isEmpty()) {
+                            logger.info("Retrieving {} saved records from database with calculated fields", savedRecords.size());
+                            
+                            // Convert PerformanceRecord objects to snake_case format
+                            List<Map<String, Object>> recordsList = new java.util.ArrayList<>();
+                            for (PerformanceRecord pr : savedRecords) {
+                                Map<String, Object> record = new HashMap<>();
+                                record.put("fin_year", pr.getFinYear());
+                                record.put("month", pr.getMonth());
+                                record.put("state_name", pr.getStateName());
+                                record.put("district_name", pr.getDistrictName());
+                                record.put("households_worked", pr.getHouseholdsWorked());
+                                record.put("persondays_generated", pr.getPersondaysGenerated());
+                                record.put("women_persondays_percent", pr.getWomenPersondaysPercent());
+                                record.put("no_of_ongoing_works", pr.getNoOfOngoingWorks());
+                                record.put("no_of_completed_works", pr.getNoOfCompletedWorks());
+                                record.put("avg_wage_rate", pr.getAvgWageRate());
+                                record.put("total_wages", pr.getTotalWages());
+                                // Also include alternative field names for compatibility
+                                record.put("Average_Wage_rate_per_day_per_person", pr.getAvgWageRate());
+                                record.put("Material_and_skilled_Wages", pr.getTotalWages());
+                                record.put("Total_Households_Worked", pr.getHouseholdsWorked());
+                                record.put("Total_Persondays_Generated", pr.getPersondaysGenerated());
+                                record.put("Persondays_of_Central_Liability_so_far", pr.getPersondaysGenerated());
+                                record.put("Number_of_Ongoing_Works", pr.getNoOfOngoingWorks());
+                                record.put("Number_of_Completed_Works", pr.getNoOfCompletedWorks());
+                                record.put("Women_Persondays_Percent", pr.getWomenPersondaysPercent());
+                                if (pr.getPersondaysGenerated() != null && pr.getWomenPersondaysPercent() != null) {
+                                    long womenPersondays = (long)(pr.getPersondaysGenerated() * pr.getWomenPersondaysPercent() / 100.0);
+                                    record.put("Women_Persondays", womenPersondays);
+                                } else {
+                                    record.put("Women_Persondays", null);
+                                }
+                                recordsList.add(record);
+                            }
+                            
+                            Map<String, Object> response = new HashMap<>();
+                            response.put("records", recordsList);
+                            response.put("source", "api-saved-to-db");
+                            response.put("total", recordsList.size());
+                            response.put("count", recordsList.size());
+                            String jsonResponse = objectMapper.writeValueAsString(response);
+                            cache.put(cacheKey, jsonResponse);
+                            return ResponseEntity.ok(jsonResponse);
+                        }
+                    }
                 }
             } else {
                 logger.debug("Database saving is disabled (useDatabase=false)");

@@ -6,6 +6,8 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.security.servlet.SecurityAutoConfiguration;
 import org.springframework.jdbc.core.JdbcTemplate;
+import com.mgnrega.backend.entity.PerformanceRecord;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -33,7 +35,33 @@ public class BackendApplication {
     public static class DebugController {
         
         @Autowired(required = false)
-        private com.mgnrega.backend.repository.PerformanceRecordRepository performanceRecordRepository;
+        private PerformanceRecordRepository performanceRecordRepository;
+        
+        @GetMapping("/clear-null-records")
+        public ResponseEntity<String> clearNullRecords() {
+            try {
+                if (performanceRecordRepository == null) {
+                    return ResponseEntity.status(500).body("{\"error\":\"Repository not available\"}");
+                }
+                
+                List<PerformanceRecord> allRecords = performanceRecordRepository.findAll();
+                List<PerformanceRecord> nullRecords = allRecords.stream()
+                    .filter(r -> r.getPersondaysGenerated() == null && 
+                               r.getHouseholdsWorked() == null && 
+                               r.getAvgWageRate() == null && 
+                               r.getTotalWages() == null)
+                    .collect(java.util.stream.Collectors.toList());
+                
+                if (!nullRecords.isEmpty()) {
+                    performanceRecordRepository.deleteAll(nullRecords);
+                    return ResponseEntity.ok("{\"message\":\"Deleted " + nullRecords.size() + " records with null data\",\"deletedCount\":" + nullRecords.size() + "}");
+                } else {
+                    return ResponseEntity.ok("{\"message\":\"No null records found\",\"deletedCount\":0}");
+                }
+            } catch (Exception e) {
+                return ResponseEntity.status(500).body("{\"error\":\"" + e.getMessage() + "\"}");
+            }
+        }
 
         @GetMapping("/states")
         public Map<String, Object> getStatesInDatabase() {
